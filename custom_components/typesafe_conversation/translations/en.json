@@ -1,0 +1,52 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to TypeSafe AI",
+        "description": "Enter the API key from your TypeSafe account. Jev will be used to interpret Assist commands and map them onto Home Assistant intents.",
+        "data": {
+          "api_key": "API key",
+          "name": "Name"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Re-authenticate TypeSafe AI",
+        "data": {
+          "api_key": "API key"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect to the TypeSafe API",
+      "invalid_auth": "Invalid API key",
+      "unknown": "Unexpected error"
+    },
+    "abort": {
+      "already_configured": "This TypeSafe account is already configured",
+      "reauth_successful": "Re-authentication was successful"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Jev agent options",
+        "data": {
+          "model": "Model",
+          "fallback_agent": "Fallback conversation agent",
+          "intent_confidence": "Minimum intent confidence",
+          "target_confidence": "Minimum target confidence",
+          "include_state": "Include current entity states in the request",
+          "timeout": "Request timeout (seconds)"
+        },
+        "data_description": {
+          "model": "TypeSafe model alias, normally jev-latest.",
+          "fallback_agent": "Agent to hand the request to when Jev is unsure, the request is conversational, or it contains multiple actions. Leave empty to answer with an error instead.",
+          "intent_confidence": "Below this confidence Jev's intent choice is not acted on and the request goes to the fallback agent.",
+          "target_confidence": "Below this confidence a resolved device/area is not trusted.",
+          "include_state": "Adds each exposed entity's current state to the request. Slightly more tokens, can help with ambiguous commands.",
+          "timeout": "How long to wait for the TypeSafe API before giving up."
+        }
+      }
+    }
+  }
+}
