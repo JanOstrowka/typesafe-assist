@@ -12,6 +12,8 @@ Jev is a System One model: it does not generate text. It answers typed questions
 
 When Jev is unsure, the request is conversational, or it contains several actions, the original text is handed to an optional fallback conversation agent (for example an OpenAI, Anthropic or Ollama agent).
 
+Ambiguous device references ("turn off the fan" when there are two fans) are resolved without the fallback: unavailable devices are skipped, the speaker's room is preferred when the command comes from a satellite, plurals target all devices of that kind, and otherwise the agent asks "Which fan: A or B?" and resolves the reply with a second, tiny Jev request.
+
 ## Installation
 
 ### HACS (Recommended)

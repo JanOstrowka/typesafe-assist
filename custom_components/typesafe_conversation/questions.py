@@ -9,13 +9,14 @@ than a chain of dependent calls.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from .api import ChoiceAnswer, SystemOneResponse
 from .const import (
     INTENT_OTHER,
     MAX_CHOICE_OPTIONS,
+    OPTION_ALL,
     OPTION_NONE,
     Q_AREA,
     Q_BRIGHTNESS,
@@ -28,6 +29,7 @@ from .const import (
     Q_INTENT,
     Q_LEVEL,
     Q_NEEDS_CONVERSATION,
+    Q_PICK,
     Q_STATE_FILTER,
     Q_TARGET_TYPE,
 )
@@ -483,11 +485,55 @@ class Interpretation:
     is_compound: bool = False
     needs_conversation: bool = False
     intent_probabilities: dict[str, float] = field(default_factory=dict)
+    candidates: list[ExposedEntity] = field(default_factory=list)
+    """Possible targets when the command was ambiguous (reason == ambiguous_target)."""
 
     @property
     def actionable(self) -> bool:
         """True when an intent should be executed."""
         return self.intent is not None and self.reason is None
+
+    def with_target(self, entity: ExposedEntity) -> Interpretation:
+        """Return a copy of this interpretation targeting one specific entity."""
+        slots = {
+            k: v for k, v in self.slots.items() if k not in ("name", "area", "floor")
+        }
+        slots["name"] = _slot(entity.entity_id, entity.name)
+        slots["domain"] = _slot([entity.domain], entity.domain)
+        return replace(
+            self,
+            slots=slots,
+            reason=None,
+            target_entity=entity,
+            target_domain=entity.domain,
+            target_all=False,
+            candidates=[],
+        )
+
+    def with_all_candidates(self) -> Interpretation:
+        """Return a copy targeting every candidate (all devices of the domain)."""
+        slots = {
+            k: v for k, v in self.slots.items() if k not in ("name", "area", "floor")
+        }
+        slots["name"] = _slot("all")
+        domain = self.target_domain or (
+            self.candidates[0].domain if self.candidates else None
+        )
+        if domain:
+            slots["domain"] = _slot([domain], domain)
+        area = self.candidates[0].area if self.candidates else None
+        if area and all(e.area == area for e in self.candidates):
+            slots["area"] = _slot(area)
+        return replace(
+            self,
+            slots=slots,
+            reason=None,
+            target_entity=None,
+            target_domain=domain,
+            target_area=slots.get("area", {}).get("value"),
+            target_all="area" not in slots,
+            candidates=[],
+        )
 
 
 def _slot(value: Any, text: str | None = None) -> dict[str, Any]:
@@ -523,15 +569,77 @@ def _resolve_entity(
             return entity, answer.confidence
 
     # Second pass: whichever per-domain question is most sure about a non-none pick.
+    # This is a guess, so don't guess an unavailable device.
     best: tuple[ExposedEntity | None, float] = (None, 0.0)
     for domain in question_set.entity_domains:
         answer = response.choice(f"{Q_ENTITY_PREFIX}{domain}")
         option, prob = _best_non_none(answer)
-        if option and prob > best[1] and (entity := snapshot.entity(option)):
+        if (
+            option
+            and prob > best[1]
+            and (entity := snapshot.entity(option))
+            and entity.available
+        ):
             best = (entity, prob)
     if best[0] is not None and best[1] >= target_confidence:
         return best
     return None, best[1]
+
+
+def _disambiguate(
+    snapshot: HomeSnapshot,
+    domain: str,
+) -> list[ExposedEntity]:
+    """Narrow "the fan" down using availability and the speaker's location."""
+    pool = [e for e in snapshot.entities_in_domain(domain) if e.available]
+    if not pool:
+        return []
+    if snapshot.device_area and any(e.area == snapshot.device_area for e in pool):
+        pool = [e for e in pool if e.area == snapshot.device_area]
+    return pool
+
+
+def build_pick_questions(
+    candidates: list[ExposedEntity],
+) -> dict[str, dict[str, Any]]:
+    """Question set for resolving the reply to a clarification question."""
+    criteria: dict[str, str | None] = {
+        entity.entity_id: entity.describe()
+        for entity in candidates[: MAX_CHOICE_OPTIONS - 2]
+    }
+    criteria[OPTION_ALL] = "All of them / both / every one"
+    criteria[OPTION_NONE] = (
+        "The reply does not pick any of these: it cancels, changes the subject, "
+        "or is an unrelated new command"
+    )
+    return {
+        Q_PICK: _choice(
+            "The assistant asked which device the user meant. Which option does the "
+            "user's reply refer to? Match on name, alias, room, or position in the list "
+            "(e.g. 'the first one', 'the second').",
+            criteria,
+        )
+    }
+
+
+def pick_state(
+    question: str, reply: str, candidates: list[ExposedEntity]
+) -> dict[str, Any]:
+    """State payload for the clarification follow-up."""
+    return {
+        "assistant_question": question,
+        "user_reply": reply,
+        "options": [
+            {
+                "position": index + 1,
+                "id": entity.entity_id,
+                "name": entity.name,
+                **({"aliases": entity.aliases} if entity.aliases else {}),
+                **({"area": entity.area} if entity.area else {}),
+            }
+            for index, entity in enumerate(candidates)
+        ],
+    }
 
 
 def interpret(
@@ -656,7 +764,38 @@ def interpret(
             if area_answer and target_type in ("area", OPTION_NONE):
                 result.confidence = min(result.confidence, area_answer.confidence)
         elif requires_target:
-            result.reason = "no_target"
+            # No specific device was named ("turn off the fan"). If we at least
+            # know the kind of device, narrow it down in code before giving up.
+            group_domain = (
+                chosen_domain
+                if chosen_domain
+                and domain_answer is not None
+                and domain_answer.confidence >= target_confidence
+                else None
+            )
+            pool = _disambiguate(snapshot, group_domain) if group_domain else []
+            everything_prob = (
+                target_type_answer.probability("everything")
+                if target_type_answer
+                else 0.0
+            )
+            if len(pool) == 1:
+                only = pool[0]
+                result.target_entity = only
+                result.target_domain = only.domain
+                slots["name"] = _slot(only.entity_id, only.name)
+                slots["domain"] = _slot([only.domain], only.domain)
+            elif pool and (target_type == "everything" or everything_prob >= 0.35):
+                slots["name"] = _slot("all")
+                slots["domain"] = _slot([group_domain], group_domain)
+                result.target_domain = group_domain
+                result.target_all = True
+            elif pool:
+                result.reason = "ambiguous_target"
+                result.target_domain = group_domain
+                result.candidates = pool
+            else:
+                result.reason = "no_target"
         elif chosen_domain:
             # Optional target with only a domain (e.g. "pause the music").
             result.target_domain = chosen_domain

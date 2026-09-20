@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import time
+from dataclasses import dataclass
 from typing import Any, Literal
 
 from homeassistant.components import conversation
@@ -30,6 +31,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .api import SystemOneResponse, TypeSafeClient, TypeSafeError
 from .const import (
+    CLARIFICATION_TTL_SECONDS,
     CONF_FALLBACK_AGENT,
     CONF_INCLUDE_STATE,
     CONF_INTENT_CONFIDENCE,
@@ -38,12 +40,35 @@ from .const import (
     DEFAULT_INTENT_CONFIDENCE,
     DEFAULT_TARGET_CONFIDENCE,
     DOMAIN,
+    OPTION_ALL,
+    OPTION_NONE,
+    Q_PICK,
 )
 from .home_state import ASSISTANT, async_snapshot_home
-from .questions import Interpretation, build_questions, interpret
-from .speech import ERROR_SPEECH, describe_target, speech_for
+from .questions import (
+    Interpretation,
+    build_pick_questions,
+    build_questions,
+    interpret,
+    pick_state,
+)
+from .speech import (
+    ERROR_SPEECH,
+    clarification_question,
+    describe_target,
+    speech_for,
+)
 
 _LOGGER = logging.getLogger(__name__)
+
+
+@dataclass(slots=True)
+class PendingClarification:
+    """A command waiting for the user to say which device they meant."""
+
+    interpretation: Interpretation
+    question: str
+    asked_at: float
 
 
 async def async_setup_entry(
@@ -67,6 +92,7 @@ class TypeSafeConversationEntity(
     def __init__(self, entry: ConfigEntry) -> None:
         """Initialize."""
         self.entry = entry
+        self._pending: dict[str, PendingClarification] = {}
         self._attr_unique_id = entry.entry_id
         self._attr_device_info = dr.DeviceInfo(
             identifiers={(DOMAIN, entry.entry_id)},
@@ -107,6 +133,20 @@ class TypeSafeConversationEntity(
         fallback_agent: str | None = options.get(CONF_FALLBACK_AGENT) or None
         if fallback_agent == self.entity_id:
             fallback_agent = None
+        target_confidence = options.get(
+            CONF_TARGET_CONFIDENCE, DEFAULT_TARGET_CONFIDENCE
+        )
+
+        # Is this the answer to a "which one?" question we asked a moment ago?
+        if (pending := self._pop_pending(chat_log.conversation_id)) is not None:
+            resolved = await self._async_resolve_clarification(
+                user_input, pending, target_confidence
+            )
+            if resolved is not None:
+                return await self._async_execute(
+                    user_input, chat_log, resolved, language
+                )
+            # Not an answer to our question: treat it as a fresh command.
 
         snapshot = async_snapshot_home(
             self.hass,
@@ -152,9 +192,7 @@ class TypeSafeConversationEntity(
             intent_confidence=options.get(
                 CONF_INTENT_CONFIDENCE, DEFAULT_INTENT_CONFIDENCE
             ),
-            target_confidence=options.get(
-                CONF_TARGET_CONFIDENCE, DEFAULT_TARGET_CONFIDENCE
-            ),
+            target_confidence=target_confidence,
         )
         self._trace(response, interpretation, elapsed, len(question_set.questions))
         _LOGGER.debug(
@@ -169,6 +207,10 @@ class TypeSafeConversationEntity(
 
         if interpretation.is_compound and fallback_agent:
             return await self._async_fallback(user_input, fallback_agent, "compound")
+        if interpretation.reason == "ambiguous_target" and interpretation.candidates:
+            return self._ask_clarification(
+                user_input, chat_log, interpretation, language
+            )
         if not interpretation.actionable:
             reason = interpretation.reason or "no_answer"
             if fallback_agent:
@@ -178,6 +220,115 @@ class TypeSafeConversationEntity(
             return self._error_result(user_input, chat_log, reason, language)
 
         return await self._async_execute(user_input, chat_log, interpretation, language)
+
+    # ------------------------------------------------------------------
+    # Clarification ("Which fan: BlueAir Fan or fan socket?")
+    # ------------------------------------------------------------------
+    def _pop_pending(self, conversation_id: str | None) -> PendingClarification | None:
+        """Return and clear the pending question for a conversation, if still fresh."""
+        now = time.monotonic()
+        for key in [
+            k
+            for k, p in self._pending.items()
+            if now - p.asked_at > CLARIFICATION_TTL_SECONDS
+        ]:
+            self._pending.pop(key, None)
+        if conversation_id is None:
+            return None
+        return self._pending.pop(conversation_id, None)
+
+    def _ask_clarification(
+        self,
+        user_input: conversation.ConversationInput,
+        chat_log: conversation.ChatLog,
+        interpretation: Interpretation,
+        language: str,
+    ) -> conversation.ConversationResult:
+        """Ask which candidate the user meant and remember the command."""
+        question = clarification_question(interpretation)
+        self._pending[chat_log.conversation_id] = PendingClarification(
+            interpretation=interpretation, question=question, asked_at=time.monotonic()
+        )
+        conversation.async_conversation_trace_append(
+            conversation.ConversationTraceEventType.AGENT_DETAIL,
+            {
+                "typesafe_clarification": {
+                    "intent": interpretation.intent,
+                    "candidates": [e.entity_id for e in interpretation.candidates],
+                    "question": question,
+                }
+            },
+        )
+        _LOGGER.debug("Asking for clarification: %s", question)
+        intent_response = intent.IntentResponse(language=language)
+        intent_response.response_type = intent.IntentResponseType.QUERY_ANSWER
+        intent_response.async_set_speech(question)
+        chat_log.async_add_assistant_content_without_tools(
+            conversation.AssistantContent(
+                agent_id=user_input.agent_id, content=question
+            )
+        )
+        return conversation.ConversationResult(
+            response=intent_response,
+            conversation_id=chat_log.conversation_id,
+            continue_conversation=True,
+        )
+
+    async def _async_resolve_clarification(
+        self,
+        user_input: conversation.ConversationInput,
+        pending: PendingClarification,
+        target_confidence: float,
+    ) -> Interpretation | None:
+        """Map the user's reply onto one of the candidates.
+
+        Returns None when the reply is not an answer to our question, in which
+        case the caller processes it as a brand-new command.
+        """
+        candidates = pending.interpretation.candidates
+        started = time.monotonic()
+        try:
+            response = await self._client.system_one(
+                pick_state(pending.question, user_input.text, candidates),
+                build_pick_questions(candidates),
+            )
+        except TypeSafeError as err:
+            _LOGGER.warning("TypeSafe clarification request failed: %s", err)
+            return None
+        answer = response.choice(Q_PICK)
+        elapsed = time.monotonic() - started
+        _LOGGER.debug(
+            "Jev clarification (%.0f ms): pick=%s confidence=%.2f for %r",
+            elapsed * 1000,
+            answer.choice if answer else None,
+            answer.confidence if answer else 0.0,
+            user_input.text,
+        )
+        conversation.async_conversation_trace_append(
+            conversation.ConversationTraceEventType.AGENT_DETAIL,
+            {
+                "typesafe_clarification_reply": {
+                    "latency_ms": round(elapsed * 1000),
+                    "pick": answer.choice if answer else None,
+                    "confidence": round(answer.confidence, 3) if answer else None,
+                    "probabilities": (
+                        {k: round(v, 3) for k, v in answer.ranked()[:5]}
+                        if answer
+                        else {}
+                    ),
+                }
+            },
+        )
+        if answer is None or answer.confidence < target_confidence:
+            return None
+        if answer.choice == OPTION_ALL:
+            return pending.interpretation.with_all_candidates()
+        if answer.choice == OPTION_NONE:
+            return None
+        for entity in candidates:
+            if entity.entity_id == answer.choice:
+                return pending.interpretation.with_target(entity)
+        return None
 
     # ------------------------------------------------------------------
     async def _async_execute(

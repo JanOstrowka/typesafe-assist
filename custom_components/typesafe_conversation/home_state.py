@@ -8,6 +8,7 @@ from typing import Any
 from homeassistant.components.homeassistant.exposed_entities import (
     async_should_expose,
 )
+from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.core import HomeAssistant, State, callback
 from homeassistant.helpers import (
     area_registry as ar,
@@ -105,6 +106,7 @@ class ExposedEntity:
     floor: str | None
     state: str | None = None
     attributes: dict[str, Any] = field(default_factory=dict)
+    available: bool = True
 
     @property
     def all_names(self) -> list[str]:
@@ -120,6 +122,8 @@ class ExposedEntity:
             parts.append(f"in the {self.area}")
         elif self.floor:
             parts.append(f"on the {self.floor} floor")
+        if not self.available:
+            parts.append("(currently unavailable)")
         return " ".join(parts)
 
     def as_state(self, include_state: bool) -> dict[str, Any]:
@@ -300,6 +304,7 @@ def async_snapshot_home(
                 floor=floor_name_for_area(area),
                 state=state.state if include_state else None,
                 attributes=attributes,
+                available=state.state not in (STATE_UNAVAILABLE, STATE_UNKNOWN),
             )
         )
 

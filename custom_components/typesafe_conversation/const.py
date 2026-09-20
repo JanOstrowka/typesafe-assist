@@ -23,6 +23,13 @@ DEFAULT_INCLUDE_STATE = False
 
 # Sentinel option used in every Choice question to let the model opt out.
 OPTION_NONE = "none"
+# Sentinel option in clarification follow-ups meaning "all of the candidates".
+OPTION_ALL = "all"
+
+# How long a clarification question ("which fan?") stays answerable.
+CLARIFICATION_TTL_SECONDS = 180
+# Longest spoken list of candidates before we just give a count.
+MAX_SPOKEN_CANDIDATES = 5
 # Sentinel intent meaning "hand this to a generative agent / can't handle".
 INTENT_OTHER = "other"
 
@@ -43,3 +50,4 @@ Q_LEVEL = "level_word"
 Q_COMPOUND = "is_compound"
 Q_NEEDS_CONVERSATION = "needs_conversation"
 Q_STATE_FILTER = "state_filter"
+Q_PICK = "pick"

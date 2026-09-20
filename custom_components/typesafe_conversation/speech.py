@@ -10,6 +10,7 @@ from homeassistant.core import State
 from homeassistant.helpers import intent
 from homeassistant.util import dt as dt_util
 
+from .const import MAX_SPOKEN_CANDIDATES
 from .home_state import DOMAIN_PLURALS
 from .questions import Interpretation
 
@@ -57,10 +58,49 @@ _STATE_WORDS = {
 }
 
 
+_SINGULARS = {
+    "light": "light",
+    "switch": "switch",
+    "cover": "cover",
+    "climate": "thermostat",
+    "fan": "fan",
+    "media_player": "media player",
+    "lock": "lock",
+    "vacuum": "vacuum",
+    "humidifier": "humidifier",
+    "scene": "scene",
+    "script": "script",
+    "automation": "automation",
+    "sensor": "sensor",
+    "binary_sensor": "sensor",
+    "input_boolean": "toggle",
+    "valve": "valve",
+}
+
+
 def _plural(domain: str | None) -> str:
     if domain is None:
         return "devices"
     return DOMAIN_PLURALS.get(domain, domain.replace("_", " ") + "s")
+
+
+def _singular(domain: str | None) -> str:
+    if domain is None:
+        return "device"
+    return _SINGULARS.get(domain, domain.replace("_", " "))
+
+
+def clarification_question(result: Interpretation) -> str:
+    """Ask which of several candidate devices the user meant."""
+    kind = _singular(result.target_domain)
+    names = [entity.name for entity in result.candidates]
+    if len(names) <= MAX_SPOKEN_CANDIDATES:
+        listed = ", ".join(names[:-1]) + f" or {names[-1]}"
+        return f"Which {kind}: {listed}?"
+    return (
+        f"Which {kind}? There are {len(names)} {_plural(result.target_domain)}. "
+        "Say its name or room, or say all of them."
+    )
 
 
 def describe_target(result: Interpretation) -> str:
@@ -237,6 +277,7 @@ def _speech_for_state(result: Interpretation, response: intent.IntentResponse) -
 
 ERROR_SPEECH = {
     "no_target": "Sorry, I couldn't tell which device you meant.",
+    "ambiguous_target": "Sorry, I couldn't tell which device you meant.",
     "ambiguous_domain": "Sorry, which kind of device did you mean?",
     "missing_value": "Sorry, I didn't catch the value to set.",
     "low_confidence": "Sorry, I'm not sure what you meant.",
