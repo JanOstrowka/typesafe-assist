@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="brand/icon@2x.png" alt="TypeSafe AI" width="128" height="128">
+</p>
+
 # TypeSafe Conversation (Jev) for Home Assistant
 
 A conversation agent for Home Assistant Assist that uses [TypeSafe's Jev](https://docs.typesafe.ai/introduction) to interpret commands.
