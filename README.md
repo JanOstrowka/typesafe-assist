@@ -8,10 +8,16 @@ When Jev is unsure, the request is conversational, or it contains several action
 
 ## Installation
 
-### HACS
+### HACS (Recommended)
 
-1. HACS → Integrations → ⋮ → Custom repositories.
-2. Add `https://github.com/JanOstrowka/typesafe-assist` with category **Integration**.
+[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=JanOstrowka&repository=typesafe-assist&category=integration)
+
+1. Make sure [HACS](https://hacs.xyz/) is installed.
+2. Click the badge above, or go to **HACS → Integrations → ⋮ → Custom repositories** and add:
+   ```
+   https://github.com/JanOstrowka/typesafe-assist
+   ```
+   with category **Integration**.
 3. Download "TypeSafe Conversation (Jev)" and restart Home Assistant.
 
 ### Manual
