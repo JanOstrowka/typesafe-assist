@@ -6,6 +6,8 @@
 
 A conversation agent for Home Assistant Assist that uses [TypeSafe's Jev](https://docs.typesafe.ai/introduction) to interpret commands.
 
+> **Independent community project.** This integration is not affiliated with, endorsed by, or supported by TypeSafe AI. It is an unofficial, community-maintained client for their public API, and you use it with your own TypeSafe account and API key. "TypeSafe", "Jev" and the TypeSafe logo are trademarks of TypeSafe AI and are used here for identification purposes only. Questions or issues about this integration belong in this repository's [issue tracker](https://github.com/JanOstrowka/typesafe-assist/issues), not with TypeSafe.
+
 Jev is a System One model: it does not generate text. It answers typed questions about a piece of state and returns choices with calibrated probabilities. This integration sends each Assist command, together with the entities exposed to Assist, to Jev in a single request containing a speculative fan-out of questions (intent, target, device, room, brightness, and so on). The answers are mapped onto Home Assistant's built-in intents (`HassTurnOn`, `HassLightSet`, `HassGetState`, ...), which do the actual device control. Spoken confirmations come from templates.
 
 When Jev is unsure, the request is conversational, or it contains several actions, the original text is handed to an optional fallback conversation agent (for example an OpenAI, Anthropic or Ollama agent).
@@ -43,3 +45,7 @@ Every request is visible in the Assist debug view with Jev's latency, top intent
 - Spoken responses are English.
 - Intents that need free text (shopping list, broadcast) are routed to the fallback agent, since Jev cannot extract free text.
 - Requires Home Assistant 2025.6 or newer.
+
+## Disclaimer
+
+This is an independent open-source project and is not affiliated with TypeSafe AI. Use of the TypeSafe API is subject to TypeSafe's own terms and pricing. All product names, logos and brands are property of their respective owners.
